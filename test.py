@@ -40,11 +40,11 @@ parser.add_argument(
     help='batch_size')
 
 parser.add_argument(
-    '--train_path', type=str, default='./MDGAT-matcher/KITTI/',
+    '--train_path', type=str, default='./KITTI/',
     help='Path to the directory of training scans.')
 
 parser.add_argument(
-    '--model_out_path', type=str, default='./MDGAT-matcher/models/checkpoint',
+    '--model_out_path', type=str, default='./models/checkpoint',
     help='Path to the directory of output model')
 
 parser.add_argument(
@@ -56,15 +56,15 @@ parser.add_argument(
     help='Gpu rank.')
 
 parser.add_argument(
-    '--txt_path', type=str, default='./MDGAT-matcher/KITTI/preprocess-random-full',
+    '--txt_path', type=str, default='./KITTI/preprocess-random-full',
     help='Path to the directory of kepoints.')
 
 parser.add_argument(
-    '--keypoints_path', type=str, default='./MDGAT-matcher/KITTI/keypoints/tsf_256_FPFH_16384-512-k1k16-2d-nonoise',
+    '--keypoints_path', type=str, default='./KITTI/keypoints/tsf_256_FPFH_16384-512-k1k16-2d-nonoise',
     help='Path to the directory of kepoints.')
 
 parser.add_argument(
-    '--resume_model', type=str, default='./MDGAT-matcher/pre-trained/best_model.pth',
+    '--resume_model', type=str, default='./pre-trained/best_model.pth',
     help='Number of skip frames for training')
 
 parser.add_argument(

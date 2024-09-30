@@ -6,6 +6,9 @@ from torch.autograd import Variable
 import torch.multiprocessing
 from tqdm import tqdm
 import time
+import cv2
+import numpy as np
+import matplotlib.cm as cm
 from tensorboardX import SummaryWriter
 from models.superglue import SuperGlue
 from models.mdgat import MDGAT
@@ -26,7 +29,7 @@ parser.add_argument(
     help='Learning rate')
 
 parser.add_argument(
-    '--epoch', type=int, default=1000,
+    '--epoch', type=int, default=100,
     help='Number of epoches')
 
 parser.add_argument(
@@ -34,7 +37,7 @@ parser.add_argument(
     help='If memory is enough, load all the data')
         
 parser.add_argument(
-    '--batch_size', type=int, default=64, #12
+    '--batch_size', type=int, default=1, #12
     help='Batch size')
 
 parser.add_argument(
@@ -48,14 +51,6 @@ parser.add_argument(
 parser.add_argument(
     '--net', type=str, default='mdgat', 
     help='Choose net structure : mdgat superglue')
-
-parser.add_argument(
-    '--loss_method', type=str, default='gap_loss',
-    help='Choose loss function : superglue triplet_loss gap_loss')
-
-parser.add_argument(
-    '--mutual_check', type=bool, default=False,  # True False
-    help='If perform mutual check')
 
 parser.add_argument(
     '--k', type=int, default=[128, None, 128, None, 64, None, 64, None], 
@@ -78,7 +73,7 @@ parser.add_argument(
     help='')
 
 parser.add_argument(
-    '--max_keypoints', type=int, default=512,  #1024
+    '--max_keypoints', type=int, default=2048,  #1024
     help='Maximum number of keypoints'
             ' (\'-1\' keeps all keypoints)')
 
@@ -107,20 +102,69 @@ parser.add_argument(
     help='Path to the directory of output model')
 
 parser.add_argument(
-    '--match_threshold', type=float, default=0.2,
+    '--match_threshold', type=float, default=0.1,
     help='SuperGlue match threshold')
 
 parser.add_argument(
     '--threshold', type=float, default=0.5,
     help='Ground truth distance threshold')
 
-parser.add_argument(
-    '--triplet_loss_gamma', type=float, default=0.5,
-    help='Threshold for triplet loss and gap loss')
 
-parser.add_argument(
-    '--train_step', type=int, default=3,  
-    help='Training step when using pointnet: 1,2,3')
+def make_matching_plot_fast(image0, image1, kpts0, kpts1, mkpts0,
+                            mkpts1, color, text, path=None,
+                            show_keypoints=False, margin=10,
+                            opencv_display=False, opencv_title=''):
+    H0, W0 = image0.shape
+    H1, W1 = image1.shape
+    H, W = max(H0, H1), W0 + W1 + margin
+
+    out = 255*np.ones((H, W), np.uint8)
+    out[:H0, :W0] = image0
+    out[:H1, W0+margin:] = image1
+    out = np.stack([out]*3, -1)
+
+    if show_keypoints:
+        kpts0, kpts1 = np.round(kpts0).astype(int), np.round(kpts1).astype(int)
+        white = (255, 255, 255)
+        black = (0, 0, 0)
+        for x, y in kpts0:
+            cv2.circle(out, (x, y), 2, black, -1, lineType=cv2.LINE_AA)
+            cv2.circle(out, (x, y), 1, white, -1, lineType=cv2.LINE_AA)
+        for x, y in kpts1:
+            cv2.circle(out, (x + margin + W0, y), 2, black, -1,
+                       lineType=cv2.LINE_AA)
+            cv2.circle(out, (x + margin + W0, y), 1, white, -1,
+                       lineType=cv2.LINE_AA)
+
+    mkpts0, mkpts1 = np.round(mkpts0).astype(int), np.round(mkpts1).astype(int)
+    color = (np.array(color[:, :3])*255).astype(int)[:, ::-1]
+    for (x0, y0), (x1, y1), c in zip(mkpts0, mkpts1, color):
+        c = c.tolist()
+        cv2.line(out, (x0, y0), (x1 + margin + W0, y1),
+                 color=c, thickness=1, lineType=cv2.LINE_AA)
+        # display line end-points as circles
+        cv2.circle(out, (x0, y0), 2, c, -1, lineType=cv2.LINE_AA)
+        cv2.circle(out, (x1 + margin + W0, y1), 2, c, -1,
+                   lineType=cv2.LINE_AA)
+
+    Ht = int(H * 30 / 480)  # text height
+    txt_color_fg = (255, 255, 255)
+    txt_color_bg = (0, 0, 0)
+    for i, t in enumerate(text):
+        cv2.putText(out, t, (10, Ht*(i+1)), cv2.FONT_HERSHEY_DUPLEX,
+                    H*1.0/480, txt_color_bg, 2, cv2.LINE_AA)
+        cv2.putText(out, t, (10, Ht*(i+1)), cv2.FONT_HERSHEY_DUPLEX,
+                    H*1.0/480, txt_color_fg, 1, cv2.LINE_AA)
+
+    if path is not None:
+        cv2.imwrite(str(path), out)
+
+    if opencv_display:
+        cv2.imshow(opencv_title, out)
+        cv2.waitKey(1)
+
+    return out
+
         
 if __name__ == '__main__':
     opt = parser.parse_args()
@@ -143,10 +187,7 @@ if __name__ == '__main__':
     log_path.mkdir(exist_ok=True, parents=True)
     logger = SummaryWriter(log_path)
     
-    model_out_path = '{}/{}/{}{}-k{}-{}-{}' .format(opt.model_out_path, opt.dataset, opt.net, opt.l, opt.k, opt.loss_method, opt.descriptor)
-    if opt.descriptor == 'pointnet' or opt.descriptor == 'pointnetmsg':
-        model_out_path = '{}/train_step{}' .format(model_out_path, opt.train_step)
-    model_out_path = '{}/{}' .format(model_out_path, model_name)
+    model_out_path = '/workspace/MDGAT-matcher/outputs_gpu2'
     model_out_path = Path(model_out_path)
     model_out_path.mkdir(exist_ok=True, parents=True)
 
@@ -172,81 +213,97 @@ if __name__ == '__main__':
                 'sinkhorn_iterations': opt.sinkhorn_iterations,
                 'match_threshold': opt.match_threshold,
                 'lr': lr,
-                'loss_method': opt.loss_method,
                 'k': opt.k,
                 'descriptor': opt.descriptor,
-                'mutual_check': opt.mutual_check,
-                'triplet_loss_gamma': opt.triplet_loss_gamma,
-                'train_step':opt.train_step,
                 'L':opt.l
             }
         }
     
-    if opt.net == 'superglue':
-        net = SuperGlue(config.get('net', {}))
-    else:
-        net = MDGAT(config.get('net', {}))
+    net = MDGAT(config.get('net', {}))
     
     if torch.cuda.is_available():
-        device=torch.device('cuda:{}'.format(opt.local_rank[0]))
-        if torch.cuda.device_count() > 1:
-            print("Let's use", torch.cuda.device_count(), "GPUs!")
-            net = torch.nn.DataParallel(net, device_ids=opt.local_rank)
-        else:
-            net = torch.nn.DataParallel(net)
+        net.cuda() # make sure it trains on GPU
     else:
-        device = torch.device("cpu")
         print("### CUDA not available ###")
-    net.to(device)
 
     if opt.resume:
         net.load_state_dict(checkpoint['net']) 
-        optimizer = torch.optim.Adam(net.parameters(), lr=config.get('net', {}).get('lr'))
+        optimizer = torch.optim.Adam(net.parameters(), lr=config.get('net', {}).get('lr'), weight_decay=1e-4)
         print('Resume from:', opt.resume_model, 'at epoch', start_epoch, ',loss', loss, ',lr', lr,'.\nSo far best loss',best_loss,
         "\n====================")
     else:
-        optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+        optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=1e-4)
         print('====================\nStart new training')
 
 
-    train_set = SparseDataset(opt, 'train')
-    val_set = SparseDataset(opt, 'val')
-    
-    val_loader = torch.utils.data.DataLoader(dataset=val_set, shuffle=False, batch_size=opt.batch_size, num_workers=10, drop_last=True, pin_memory = True)
-    train_loader = torch.utils.data.DataLoader(dataset=train_set, shuffle=True, batch_size=opt.batch_size, num_workers=10, drop_last=True, pin_memory = True)
+    # load training data
+    train_set = SparseDataset('/workspace/yfcc100m', 'train', opt.max_keypoints, 'superpoint')
+    train_loader = torch.utils.data.DataLoader(dataset=train_set, shuffle=False, batch_size=opt.batch_size, drop_last=True)
+    print(f'Training data loaded with {len(train_set)} images.')
+
+    # load validation data
+    valid_set = SparseDataset('/workspace/yfcc100m', 'val', opt.max_keypoints, 'superpoint')
+    valid_loader = torch.utils.data.DataLoader(dataset=train_set, shuffle=False, batch_size=opt.batch_size, drop_last=True)
+    print(f'Validation data loaded with {len(valid_set)} images.')
     
     mean_loss = []
     for epoch in range(start_epoch, opt.epoch+1):
         epoch_loss = 0
-        current_loss = 0
-        net.double().train() 
-        train_loader = tqdm(train_loader) 
+        net.float().train()
 
         begin = time.time()
-        for i, pred in enumerate(train_loader):
+        for i, pred in enumerate(tqdm(train_loader)):
             for k in pred:
-                if k!='idx0' and k!='idx1' and k!='sequence':
+                if k != 'file_name' and k!='image0' and k!='image1':
                     if type(pred[k]) == torch.Tensor:
-                        pred[k] = Variable(pred[k].to(device))
+                        pred[k] = Variable(pred[k].cuda())
                     else:
-                        pred[k] = Variable(torch.stack(pred[k]).to(device))
+                        pred[k] = Variable(torch.stack(pred[k]).cuda())
             
             data = net(pred)
 
-            for k, v in pred.items(): 
-                pred[k] = v[0]
+            for k, v in pred.items():
+                if k != 'all_matches':
+                    pred[k] = v[0]
             pred = {**pred, **data}
 
-            if 'skip_train' in pred: # no keypoint
+            if pred['skip_train'] == True: # image has no keypoint
                 continue
 
             optimizer.zero_grad()
-            Loss = pred['loss']
-            Loss = torch.mean(Loss)
+            Loss = net.loss(pred)
             epoch_loss += Loss.item()
+            mean_loss.append(Loss)
             Loss.backward()
             optimizer.step()
             # lr_schedule.step()
+
+            # for every 1000 images, print progress and visualize the matches
+            if (i+1) % 1000 == 0:
+                print ('Epoch [{}/{}], Step [{}/{}], Train Loss: {:.4f}' 
+                    .format(epoch, opt.epoch, i+1, len(train_loader), torch.mean(torch.stack(mean_loss)).item()))
+                mean_loss = []
+
+                ### eval ###
+                # Visualize the matches.
+                image0, image1 = pred['image0'].cpu().numpy()[0]*255., pred['image1'].cpu().numpy()[0]*255.
+                kpts0, kpts1 = pred['keypoints0'].cpu().numpy()[0], pred['keypoints1'].cpu().numpy()[0]
+                matches, conf = pred['matches0'].cpu().detach().numpy()[0], pred['matching_scores0'].cpu().detach().numpy()[0]
+                valid = matches > -1
+                mkpts0 = kpts0[valid]
+                mkpts1 = kpts1[matches[valid]]
+                mconf = conf[valid]
+                viz_path = '{}/{}_matches.png'.format(model_out_path, str(i+1))
+                color = cm.jet(mconf)
+                stem = pred['file_name']
+                text = [
+                    'Training',
+                    'Keypoints: %d x %d' % (len(kpts0), len(kpts1)),
+                    'Matches: %d' % len(mkpts0),
+                ]
+                make_matching_plot_fast(
+                    image0, image1, kpts0, kpts1, mkpts0, mkpts1, color, text,
+                    path=viz_path, opencv_title='Matches')
 
             del Loss, pred, data, i
 
@@ -259,30 +316,53 @@ if __name__ == '__main__':
                             reduce memory usage and speed up computations but you 
                             won’t be able to backprop (which you don’t want in an eval script).
         '''
-        begin = time.time()
+        net.eval()
         with torch.no_grad():
-            if epoch >= 0 and epoch%1==0:
-                mean_val_loss = []
-                for i, pred in enumerate(val_loader):
-                    ### eval ###
-                    net.eval()                
-                    for k in pred:
-                        # if k != 'file_name' and k!='cloud0' and k!='cloud1':
-                        if k!='idx0' and k!='idx1' and k!='sequence':
-                            if type(pred[k]) == torch.Tensor:
-                                pred[k] = Variable(pred[k].cuda().detach())
-                            else:
-                                pred[k] = Variable(torch.stack(pred[k]).cuda().detach())
-                            # print(type(pred[k]))   #pytorch.tensor
-                    
-                    data = net(pred) 
-                    pred = {**pred, **data}
+            mean_val_loss = 0
+            for i, pred in enumerate(valid_loader):
+                if i == 100:
+                    break
+                for k in pred:
+                    if k != 'file_name' and k!='image0' and k!='image1':
+                        if type(pred[k]) == torch.Tensor:
+                            pred[k] = Variable(pred[k].cuda())
+                        else:
+                            pred[k] = Variable(torch.stack(pred[k]).cuda())
+                
+                data = net(pred)
+                for k, v in pred.items(): 
+                    if k != 'all_matches':
+                        pred[k] = v[0]
+                pred = {**pred, **data}
 
-                    Loss = pred['loss']
-                    mean_val_loss.append(Loss) 
+                if pred['skip_train'] == True: # image has no keypoint
+                    continue
+
+                Loss = net.loss(pred)
+                mean_val_loss += Loss.item()
+
+                if i < 10:
+                    image0, image1 = pred['image0'].cpu().numpy()[0]*255., pred['image1'].cpu().numpy()[0]*255.
+                    kpts0, kpts1 = pred['keypoints0'].cpu().numpy()[0], pred['keypoints1'].cpu().numpy()[0]
+                    matches, conf = pred['matches0'].cpu().detach().numpy()[0], pred['matching_scores0'].cpu().detach().numpy()[0]
+                    valid = matches > -1
+                    mkpts0 = kpts0[valid]
+                    mkpts1 = kpts1[matches[valid]]
+                    mconf = conf[valid]
+                    viz_path = '{}/Valid_{}_matches.png'.format(model_out_path, str(i+1))
+                    color = cm.jet(mconf)
+                    stem = pred['file_name']
+                    text = [
+                        'Validation',
+                        'Keypoints: %d x %d' % (len(kpts0), len(kpts1)),
+                        'Matches: %d' % len(mkpts0),
+                    ]
+
+                    make_matching_plot_fast(
+                        image0, image1, kpts0, kpts1, mkpts0, mkpts1, color,
+                        text, viz_path)
          
-            timeconsume = time.time() - begin
-            mean_val_loss = torch.mean(torch.stack(mean_val_loss)).item()
+            mean_val_loss /= len(valid_loader)
             epoch_loss /= len(train_loader)
             print('Validation loss: {:.4f}, epoch_loss: {:.4f},  best val loss: {:.4f}' .format(mean_val_loss, epoch_loss, best_loss))
             checkpoint = {
@@ -296,7 +376,7 @@ if __name__ == '__main__':
                 best_loss = mean_val_loss
                 model_out_fullpath = "{}/best_model_epoch_{}(val_loss{}).pth".format(model_out_path, epoch, best_loss)
                 torch.save(checkpoint, model_out_fullpath)
-                print('time consume: {:.1f}s, So far best loss: {:.4f}, Checkpoint saved to {}' .format(timeconsume, best_loss, model_out_fullpath))
+                print('So far best loss: {:.4f}, Checkpoint saved to {}' .format(best_loss, model_out_fullpath))
             else:
                 model_out_fullpath = "{}/model_epoch_{}.pth".format(model_out_path, epoch)
                 torch.save(checkpoint, model_out_fullpath)
@@ -310,4 +390,3 @@ if __name__ == '__main__':
             logger.add_scalar('Train/epoch_loss',epoch_loss,epoch)
             print("log file saved to {}\n"
                 .format(log_path))
-    
